@@ -21,6 +21,14 @@ baseline:
   emergency_premium_max: 0.50  # 50% premium on emergency
   shrinkage_rate: 0.03         # 3% of inventory value unaccounted for per year
 
+policy:
+  forecast_blend_weight: 0.7   # Weight given to booking-driven forecast (0.3 to historical)
+  review_period_days: 14       # Default review period for max level
+  sister_centres:
+    count: 3
+    transfer_lead_time_days: 1
+    transfer_cost_factor: 0.05 # 5% of unit cost
+
 simulation:
   seed: 42
   days: 365
