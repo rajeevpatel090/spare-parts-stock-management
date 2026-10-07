@@ -36,3 +36,21 @@ models:
   - "GLE"
   - "S-Class"
   - "EQ"
+
+classification:
+  abc_thresholds:
+    a: 0.80
+    b: 0.95
+  xyz_cv_thresholds:
+    x: 0.5
+    y: 1.0
+  service_levels:
+    FAST:
+      target: 0.97
+      z_value: 1.88
+    CRITICAL_SLOW_IMPORTED:
+      target: 0.99
+      z_value: 2.33
+    LONG_TAIL:
+      target: 0.90
+      z_value: 1.28
