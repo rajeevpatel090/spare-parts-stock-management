@@ -1,72 +1,63 @@
-# config.yaml - Configurable assumptions for the Spare Parts Stock Management prototype
-# All values calibrate the synthetic data and baseline simulation.
-
-data:
-  num_skus: 5000
-  target_inventory_value_cr: 6.0
-  imported_share: 0.6
-  
-  # Lead times in days
-  lead_time:
-    imported:
-      min: 7
-      max: 45
-    local:
-      min: 1
-      max: 5
-
 baseline:
-  emergency_rate: 0.22         # 22% of orders are emergency
-  emergency_premium_min: 0.35  # 35% premium on emergency
-  emergency_premium_max: 0.50  # 50% premium on emergency
-  shrinkage_rate: 0.03         # 3% of inventory value unaccounted for per year
-
-policy:
-  forecast_blend_weight: 0.7   # Weight given to booking-driven forecast (0.3 to historical)
-  review_period_days: 14       # Default review period for max level
-  sister_centres:
-    count: 3
-    transfer_lead_time_days: 1
-    transfer_cost_factor: 0.05 # 5% of unit cost
-
-ledger:
-  mode: "LEGACY"  # Options: LEGACY, GATED
-  legacy_untracked_share: 0.15 # 15% of verbal issues are never recorded in the book
-  gated_provisional_hours: 4   # Hours before a provisional job card is flagged
-  shrinkage:
-    theft_risk_factor_min: 0.0
-    theft_risk_factor_max: 1.0
-
-simulation:
-  seed: 42
-  days: 365
-  service_bookings_per_day:
-    min: 20
-    max: 25
-
-models:
-  - "A-Class"
-  - "C-Class"
-  - "E-Class"
-  - "GLC"
-  - "GLE"
-  - "S-Class"
-  - "EQ"
-
+  emergency_premium_max: 0.5
+  emergency_premium_min: 0.35
+  emergency_rate: 0.22
+  shrinkage_rate: 0.03
+  ss_factor: 0.5
+  stock_factor: 0.7000244140625
 classification:
   abc_thresholds:
-    a: 0.80
+    a: 0.8
     b: 0.95
-  xyz_cv_thresholds:
-    x: 0.5
-    y: 1.0
   service_levels:
-    FAST:
-      target: 0.97
-      z_value: 1.88
     CRITICAL_SLOW_IMPORTED:
       target: 0.99
       z_value: 2.33
+    FAST:
+      target: 0.97
+      z_value: 1.88
     LONG_TAIL:
-      target: 0.90
+      target: 0.9
       z_value: 1.28
+  xyz_cv_thresholds:
+    x: 0.5
+    y: 1.0
+data:
+  imported_share: 0.6
+  lead_time:
+    imported:
+      max: 45
+      min: 7
+    local:
+      max: 5
+      min: 1
+  num_skus: 5000
+  target_inventory_value_cr: 6.0
+ledger:
+  gated_provisional_hours: 4
+  legacy_untracked_share: 0.010032958984375
+  mode: LEGACY
+  shrinkage:
+    theft_risk_factor_max: 1.0
+    theft_risk_factor_min: 0.0
+models:
+- A-Class
+- C-Class
+- E-Class
+- GLC
+- GLE
+- S-Class
+- EQ
+policy:
+  forecast_blend_weight: 0.7
+  review_period_days: 14
+  sister_centres:
+    count: 3
+    transfer_cost_factor: 0.05
+    transfer_lead_time_days: 1
+simulation:
+  days: 365
+  seed: 42
+  service_bookings_per_day:
+    max: 25
+    min: 20
