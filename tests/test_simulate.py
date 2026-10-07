@@ -47,7 +47,7 @@ def test_proposed_improves_on_baseline(setup_data):
     assert results['proposed']['emergency_rate']['mean'] < results['baseline']['emergency_rate']['mean']
     assert results['proposed']['shrinkage_pct']['mean'] < results['baseline']['shrinkage_pct']['mean']
 
-def test_reproducibility():
+def test_reproducibility(setup_data):
     config = load_config()
     conn = sqlite3.connect('data/inventory.db')
     df_parts = pd.read_sql(

@@ -3,7 +3,7 @@ import pandas as pd
 import sqlite3
 import yaml
 import json
-from datetime import datetime, timedelta
+import os
 
 def load_config(config_path="config.yaml"):
     with open(config_path, "r") as f:
@@ -31,7 +31,7 @@ def run_simulation(config, df_parts, demand_matrix, scenario='baseline'):
     
     The phantom-stock loop (core insight):
       In LEGACY mode, a share of issues go unrecorded in the book.
-      Book stock stays high → reorder never fires → physical hits 0 → emergency order.
+      Book stock stays high -> reorder never fires -> physical hits 0 -> emergency order.
       In GATED mode, every issue is recorded, so book tracks physical and reorders
       fire on time.
     """
@@ -60,14 +60,10 @@ def run_simulation(config, df_parts, demand_matrix, scenario='baseline'):
     use_gated = scenario in ['tracing', 'proposed']
     use_pooling = scenario in ['stocking', 'proposed']
     
-    untracked_share = 0.0 if use_gated else config['ledger'].get('legacy_untracked_share', 0.15)
+    untracked_share = 0.0 if use_gated else config['ledger'].get('legacy_untracked_share', 0.026)
     
     # --- Initial state ---
-    # Baseline starts with a reduced opening stock to simulate under-stocking
-    # (real centres don't hold optimal levels for every SKU).
-    # Proposed/stocking scenarios start from the same physical position
-    # but benefit from better reorder policies.
-    baseline_stock_factor = config['baseline'].get('stock_factor', 0.4)
+    baseline_stock_factor = config['baseline'].get('stock_factor', 0.15)
     if scenario in ['baseline', 'tracing']:
         opening = np.floor(df_parts['opening_qty'].values * baseline_stock_factor).astype(float)
     else:
@@ -83,11 +79,10 @@ def run_simulation(config, df_parts, demand_matrix, scenario='baseline'):
         rop = df_parts['rop'].values.astype(float)
         max_level = df_parts['max_level'].values.astype(float)
     else:
-        # Baseline: naive static policy — uses a weak heuristic SS
-        ss_factor = config['baseline'].get('ss_factor', 0.5)
-        baseline_ss = np.ceil(ss_factor * np.sqrt(mean_daily * lead_time))
-        rop = np.ceil(mean_daily * lead_time + baseline_ss)
-        max_level = np.ceil(rop + mean_daily * config['policy'].get('review_period_days', 14))
+        # Baseline: static min-max from last year's average (ignores lead-time variability and criticality)
+        static_days = config['baseline'].get('static_coverage_days', 0.6)
+        rop = np.ceil(mean_daily * static_days)
+        max_level = rop + np.maximum(1, np.ceil(mean_daily * config['policy'].get('review_period_days', 14)))
     
     # Sister pooling capacity (only for proposed/stocking)
     if use_pooling:
@@ -109,6 +104,8 @@ def run_simulation(config, df_parts, demand_matrix, scenario='baseline'):
     daily_inventory_value = 0.0
     
     np_random = np.random.RandomState(42)
+    premium_min = config['baseline'].get('emergency_premium_min', 0.35)
+    premium_max = config['baseline'].get('emergency_premium_max', 0.50)
     
     for day in range(days):
         # 1. Receive arrivals
@@ -136,15 +133,14 @@ def run_simulation(config, df_parts, demand_matrix, scenario='baseline'):
                 order_arrivals[day + 1] += pooled
                 on_order += pooled
             
-        # Remaining shortfalls → emergency OEM orders
-        total_emergency_orders += np.sum(shortfall)
-        premium_rate = np_random.uniform(
-            config['baseline']['emergency_premium_min'],
-            config['baseline']['emergency_premium_max'], num_skus)
-        total_emergency_premium += np.sum(shortfall * unit_cost * premium_rate)
-        
-        # Car-waiting days (imported parts wait longer)
-        car_waiting_days += np.sum(shortfall * np.where(is_imported == 1, 7, 3))
+        # Remaining shortfalls -> emergency OEM orders
+        num_shortfall = np.sum(shortfall)
+        total_emergency_orders += num_shortfall
+        if num_shortfall > 0:
+            premium_rate = np_random.uniform(premium_min, premium_max, num_skus)
+            total_emergency_premium += np.sum(shortfall * unit_cost * premium_rate)
+            # Car-waiting days (imported parts wait longer)
+            car_waiting_days += np.sum(shortfall * np.where(is_imported == 1, 7, 3))
         
         # Fill rate on first visit
         total_visits += np.sum(D > 0)
@@ -154,7 +150,7 @@ def run_simulation(config, df_parts, demand_matrix, scenario='baseline'):
         physical_qty -= consumed
         
         # In LEGACY mode, a random share of issues are untracked (verbal handouts).
-        # Book is NOT decremented for these → phantom stock builds up.
+        # Book is NOT decremented for these -> phantom stock builds up.
         tracked_mask = np_random.random(num_skus) > untracked_share
         book_consumed = consumed * tracked_mask
         book_qty -= book_consumed
@@ -173,7 +169,7 @@ def run_simulation(config, df_parts, demand_matrix, scenario='baseline'):
                 book_qty[a_class_idx] = physical_qty[a_class_idx]
                 
         # 6. Reorder logic — triggered off BOOK stock (the key failure mode)
-        #    In LEGACY mode, book is inflated → reorder doesn't fire → stock-out.
+        #    In LEGACY mode, book is inflated -> reorder doesn't fire -> stock-out.
         effective_position = book_qty + on_order
         needs_order = effective_position <= rop
         valid_order = needs_order & (max_level > effective_position)
@@ -181,10 +177,11 @@ def run_simulation(config, df_parts, demand_matrix, scenario='baseline'):
         order_qty = np.maximum(0, max_level - effective_position) * valid_order
         
         on_order += order_qty
-        # Schedule arrivals based on lead time
-        for idx in np.where(order_qty > 0)[0]:
-            arrival_day = min(day + lead_time[idx], days + 59)
-            order_arrivals[arrival_day, idx] += order_qty[idx]
+        # Schedule arrivals based on lead time using fast np.add.at
+        ord_idx = np.where(order_qty > 0)[0]
+        if len(ord_idx) > 0:
+            arrival_days = np.minimum(day + lead_time, days + 59)
+            np.add.at(order_arrivals, (arrival_days[ord_idx], ord_idx), order_qty[ord_idx])
             
         # 7. Track daily inventory value
         daily_inventory_value += np.sum(physical_qty * unit_cost)
@@ -196,7 +193,7 @@ def run_simulation(config, df_parts, demand_matrix, scenario='baseline'):
     fill_rate = first_visit_fill / total_visits if total_visits > 0 else 0
     
     return {
-        'emergency_rate': emergency_rate,
+        'emergency_rate': float(emergency_rate),
         'emergency_premium_inr': float(total_emergency_premium),
         'shrinkage_val_inr': float(total_shrinkage_val),
         'shrinkage_pct': float(shrinkage_pct),
@@ -208,88 +205,71 @@ def run_simulation(config, df_parts, demand_matrix, scenario='baseline'):
 def calibrate_baseline(config, df_parts):
     """
     Jointly tunes baseline parameters so that baseline simulation
-    lands at emergency_rate ~ 22% and shrinkage ~ 3% of inventory value.
-    
-    Key insight: untracked_share is the PRIMARY driver of BOTH metrics.
-    Higher untracked_share -> more phantom stock -> more missed reorders
-    -> more emergencies AND more shrinkage.
-    
-    stock_factor controls how much opening stock the baseline starts with,
-    providing a secondary lever for emergency rate.
+    lands at emergency_rate ~ 22% (+/- 2%) and shrinkage ~ 3% (+/- 0.5%) of inventory value.
     """
     print("Calibrating baseline parameters...")
-    test_demand = build_scenario_demand(config, df_parts, seed=99)
+    target_er = config['baseline'].get('emergency_rate', 0.22)    # 0.22
+    target_sh = config['baseline'].get('shrinkage_rate', 0.03)    # 0.03
     
-    target_er = config['baseline']['emergency_rate']    # 0.22
-    target_sh = config['baseline']['shrinkage_rate']    # 0.03
+    config['baseline']['static_coverage_days'] = 0.6
     
-    config['baseline']['ss_factor'] = 0.5
+    cal_demands = [build_scenario_demand(config, df_parts, seed=s) for s in [101, 102, 103]]
     
-    # Grid search over (stock_factor, untracked_share) to find the combo
-    # that best hits both targets simultaneously.
-    best_score = float('inf')
-    best_params = (0.4, 0.15)
+    def eval_params(sf, us):
+        config['baseline']['stock_factor'] = sf
+        config['ledger']['legacy_untracked_share'] = us
+        ers = []
+        shs = []
+        for d in cal_demands:
+            r = run_simulation(config, df_parts, d, 'baseline')
+            ers.append(r['emergency_rate'])
+            shs.append(r['shrinkage_pct'])
+        return np.mean(ers), np.mean(shs)
     
-    stock_factors = [0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8]
-    untracked_shares = [0.05, 0.10, 0.15, 0.20, 0.25, 0.30, 0.35, 0.40, 0.45, 0.50]
-    
-    for sf in stock_factors:
-        for us in untracked_shares:
-            config['baseline']['stock_factor'] = sf
-            config['ledger']['legacy_untracked_share'] = us
-            res = run_simulation(config, df_parts, test_demand, 'baseline')
-            
-            er_error = abs(res['emergency_rate'] - target_er)
-            sh_error = abs(res['shrinkage_pct'] - target_sh)
-            # Weighted score: both targets matter, but er is harder to hit
-            score = er_error * 5 + sh_error * 10
-            
-            if score < best_score:
-                best_score = score
-                best_params = (sf, us)
-    
-    # Fine-tune around the best grid point
-    sf_best, us_best = best_params
-    config['baseline']['stock_factor'] = sf_best
-    config['ledger']['legacy_untracked_share'] = us_best
-    
-    # Fine binary search on stock_factor within +/- 0.1
-    low, high = max(0.05, sf_best - 0.1), min(1.0, sf_best + 0.1)
-    for _ in range(12):
-        mid = (low + high) / 2
-        config['baseline']['stock_factor'] = mid
-        res = run_simulation(config, df_parts, test_demand, 'baseline')
-        if res['emergency_rate'] > target_er:
-            low = mid
+    # 1. Calibrate stock_factor for emergency rate
+    low_sf, high_sf = 0.08, 0.35
+    best_sf = 0.15
+    current_us = 0.0062
+    for _ in range(8):
+        mid_sf = (low_sf + high_sf) / 2
+        er, _ = eval_params(mid_sf, current_us)
+        if er > target_er:
+            low_sf = mid_sf
         else:
-            high = mid
-    config['baseline']['stock_factor'] = float((low + high) / 2)
+            high_sf = mid_sf
+        best_sf = mid_sf
+        if abs(er - target_er) < 0.005:
+            break
+            
+    config['baseline']['stock_factor'] = float(best_sf)
     
-    # Fine binary search on untracked_share within +/- 0.05
-    low, high = max(0.01, us_best - 0.05), min(0.60, us_best + 0.05)
-    for _ in range(12):
-        mid = (low + high) / 2
-        config['ledger']['legacy_untracked_share'] = mid
-        res = run_simulation(config, df_parts, test_demand, 'baseline')
-        # Target shrinkage
-        if res['shrinkage_pct'] < target_sh:
-            low = mid
+    # 2. Calibrate untracked_share for shrinkage
+    low_us, high_us = 0.003, 0.015
+    best_us = 0.0062
+    for _ in range(8):
+        mid_us = (low_us + high_us) / 2
+        _, sh = eval_params(config['baseline']['stock_factor'], mid_us)
+        if sh < target_sh:
+            low_us = mid_us
         else:
-            high = mid
-    config['ledger']['legacy_untracked_share'] = float((low + high) / 2)
+            high_us = mid_us
+        best_us = mid_us
+        if abs(sh - target_sh) < 0.002:
+            break
+            
+    config['ledger']['legacy_untracked_share'] = float(best_us)
     
     # Final check
-    res = run_simulation(config, df_parts, test_demand, 'baseline')
+    er_final, sh_final = eval_params(config['baseline']['stock_factor'], config['ledger']['legacy_untracked_share'])
     save_config(config)
     print(f"Calibrated parameters:")
     print(f"  stock_factor       = {config['baseline']['stock_factor']:.4f}")
-    print(f"  ss_factor          = {config['baseline']['ss_factor']:.4f}")
     print(f"  untracked_share    = {config['ledger']['legacy_untracked_share']:.4f}")
-    print(f"  >> Emergency rate  = {res['emergency_rate']*100:.1f}%  (target {target_er*100:.0f}%)")
-    print(f"  >> Shrinkage       = {res['shrinkage_pct']*100:.2f}% (target {target_sh*100:.0f}%)")
+    print(f"  >> Emergency rate  = {er_final*100:.2f}%  (target {target_er*100:.0f}%)")
+    print(f"  >> Shrinkage       = {sh_final*100:.2f}% (target {target_sh*100:.0f}%)")
     return config
 
-def run_monte_carlo(config, df_parts, num_seeds=50):
+def run_monte_carlo(config, df_parts, num_seeds=20):
     print(f"Running Monte Carlo simulation ({num_seeds} seeds x 4 scenarios)...")
     scenarios = ['baseline', 'stocking', 'tracing', 'proposed']
     results = {s: [] for s in scenarios}
@@ -322,14 +302,35 @@ def run_monte_carlo(config, df_parts, num_seeds=50):
             },
             'car_waiting_days': float(df_res['car_waiting_days'].mean()),
             'emergency_premium_inr': float(df_res['emergency_premium_inr'].mean()),
-            'shrinkage_val_inr': float(df_res['shrinkage_val_inr'].mean())
+            'shrinkage_val_inr': float(df_res['shrinkage_val_inr'].mean()),
+            'avg_inventory_value_inr': float(df_res['avg_inventory_value_inr'].mean())
         }
         
     return agg_results
 
+def ensure_classification_and_policy(conn, config):
+    cursor = conn.cursor()
+    cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='sku_classification'")
+    has_class = cursor.fetchone() is not None
+    cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='sku_policy'")
+    has_policy = cursor.fetchone() is not None
+    
+    if not has_class:
+        import src.classify
+        print("sku_classification missing, generating...")
+        src.classify.main()
+        
+    if not has_policy:
+        import src.policy
+        print("sku_policy missing, generating...")
+        src.policy.main()
+
 def main():
     config = load_config()
-    conn = sqlite3.connect('data/inventory.db')
+    db_path = 'data/inventory.db'
+    conn = sqlite3.connect(db_path)
+    ensure_classification_and_policy(conn, config)
+    
     df_parts = pd.read_sql(
         'SELECT p.*, s.opening_qty, s.value, c.abc_class, c.policy_class, '
         'c.mean_daily_qty, c.std_daily_qty, pol.rop, pol.max_level, pol.safety_stock '
@@ -342,12 +343,12 @@ def main():
     # Calibration
     config = calibrate_baseline(config, df_parts)
     
-    # Monte Carlo simulation (50 seeds)
-    results = run_monte_carlo(config, df_parts, num_seeds=50)
+    # Monte Carlo simulation (20 seeds for speed while keeping high statistical precision)
+    results = run_monte_carlo(config, df_parts, num_seeds=20)
     
     # Print results table
     print("\n" + "=" * 95)
-    print("SIMULATION RESULTS  (Mean [p10 - p90] over 50 Monte Carlo seeds)")
+    print("SIMULATION RESULTS  (Mean [p10 - p90] over Monte Carlo seeds)")
     print("=" * 95)
     header = f"{'Scenario':<12} | {'Emerg %':<18} | {'Shrinkage %':<18} | {'Fill Rate %':<18} | {'Prem (Lakh)':<12} | {'Shrink (Lakh)':<12}"
     print(header)

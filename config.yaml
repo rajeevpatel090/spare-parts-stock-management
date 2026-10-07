@@ -4,7 +4,8 @@ baseline:
   emergency_rate: 0.22
   shrinkage_rate: 0.03
   ss_factor: 0.5
-  stock_factor: 0.7000244140625
+  static_coverage_days: 0.6
+  stock_factor: 0.11374999999999999
 classification:
   abc_thresholds:
     a: 0.8
@@ -35,7 +36,7 @@ data:
   target_inventory_value_cr: 6.0
 ledger:
   gated_provisional_hours: 4
-  legacy_untracked_share: 0.010032958984375
+  legacy_untracked_share: 0.00525
   mode: LEGACY
   shrinkage:
     theft_risk_factor_max: 1.0
