@@ -29,6 +29,14 @@ policy:
     transfer_lead_time_days: 1
     transfer_cost_factor: 0.05 # 5% of unit cost
 
+ledger:
+  mode: "LEGACY"  # Options: LEGACY, GATED
+  legacy_untracked_share: 0.15 # 15% of verbal issues are never recorded in the book
+  gated_provisional_hours: 4   # Hours before a provisional job card is flagged
+  shrinkage:
+    theft_risk_factor_min: 0.0
+    theft_risk_factor_max: 1.0
+
 simulation:
   seed: 42
   days: 365
